@@ -1,0 +1,40 @@
+name:                   friday-devil
+version:                0.1.0
+synopsis:               Load and store friday images from and to files using
+                        bindings to the DevIL C library.
+homepage:               https://github.com/RaphaelJ/friday-devil
+license:                LGPL-3
+license-file:           LICENSE
+author:                 Raphael Javaux <raphaeljavaux[at]gmail.com>
+maintainer:             Raphael Javaux <raphaeljavaux[at]gmail.com>
+
+description:            The library uses FFI calls to the DevIL image library to
+                        read images from a wide variety of formats, including
+                        BMP, JPG, PNG, GIF, ICO and PSD.
+                        .
+                        Please read our
+                        <https://github.com/RaphaelJ/friday-devil/blob/master/README.md README>
+                        to get a detailed usage and some examples.
+
+category:               Graphics
+stability:              Experimental
+build-type:             Simple
+cabal-version:          >= 1.10
+
+library
+    exposed-modules:    Vision.Image.Storage.DevIL
+
+    ghc-options:        -Wall -O2
+    hs-source-dirs:     src/
+    default-language:   Haskell2010
+
+    build-depends:      base                    >= 4            && < 5
+                      , bytestring              >= 0.10         && < 1.0
+                      , convertible             >= 1            && < 2
+                      , friday                  >= 0.2          && < 0.3
+                      , transformers            >= 0.3          && < 0.5
+                      , vector                  >= 0.10.0.1     && < 1.0
+
+    Build-tools:        hsc2hs
+
+    Extra-Libraries:    IL
