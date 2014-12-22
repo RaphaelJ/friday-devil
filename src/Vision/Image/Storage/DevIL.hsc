@@ -9,7 +9,7 @@ module Vision.Image.Storage.DevIL (
       ImageType (..), StorageImage (..), StorageError (..), load, loadBS, save
     ) where
 
-import Control.Applicative ((<$>))
+import Control.Applicative ((<$>), (<*))
 import Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar)
 import Control.Monad (when)
 import Control.Monad.Trans.Class (lift)
@@ -264,13 +264,16 @@ il_IMAGE_TYPE   = (#const IL_IMAGE_TYPE)
 il_UNSIGNED_BYTE :: ILenum
 il_UNSIGNED_BYTE = (#const IL_UNSIGNED_BYTE)
 
+origin :: ILenum
+origin = (#const IL_ORIGIN_UPPER_LEFT)
+
 -- | Initialize the library.
 ilInit :: StorageMonad ()
 ilInit = do
     lift ilInitC
 
     -- By default, origin is undefined and depends on the image type
-    ilOriginFuncC (#const IL_ORIGIN_LOWER_LEFT) <?> FailedToInit
+    ilOriginFuncC origin <?> FailedToInit
     ilEnableC (#const IL_ORIGIN_SET)            <?> FailedToInit
 
 foreign import ccall unsafe "ilGenImages" ilGenImagesC
@@ -331,7 +334,8 @@ fromDevil (ImageName name) = do
             ilConvertImage destFormat il_UNSIGNED_BYTE
 
     -- Converts the C vector of unsigned bytes to a garbage collected 'Vector'
-    -- inside a 'Manifest' image.
+    -- inside a 'Manifest' image. ilDeleteImages will be called when the image
+    -- will be garbage collected.
     toManifest size@(Z :. h :. w) = lift $ do
         pixels        <- castPtr <$> ilGetDataC
         managedPixels <- newForeignPtr pixels (with name (ilDeleteImagesC 1))
@@ -346,6 +350,10 @@ fromDevil (ImageName name) = do
 ilDeleteImage :: ImageName -> StorageMonad ()
 ilDeleteImage (ImageName name) = lift $ with name (ilDeleteImagesC 1)
 
+foreign import ccall unsafe "ilRegisterOrigin" ilRegisterOriginC
+    :: ILenum -- Origin
+    -> IO ()
+
 foreign import ccall unsafe "ilTexImage" ilTexImageC
     :: ILuint -> ILuint -> ILuint   -- w h depth
     -> ILubyte -> ILenum -> ILenum  -- numberOfChannels format type
@@ -354,16 +362,17 @@ foreign import ccall unsafe "ilTexImage" ilTexImageC
 
 -- | Sets the current DevIL image to the vector's internal array.
 toDevil :: StorageImage -> StorageMonad ()
-toDevil storImg =
+toDevil storImg = do
     case storImg of GreyStorage img -> writeManifest img il_LUMINANCE
                     RGBAStorage img -> writeManifest img il_RGBA
                     RGBStorage  img -> writeManifest img il_RGB
   where
     writeManifest img@(Manifest (Z :. h :. w) vec) format =
         (unsafeWith vec $ \p ->
-            ilTexImageC (fromIntegral w) (fromIntegral h) 1
+               ilTexImageC (fromIntegral w) (fromIntegral h) 1
                         (fromIntegral $ nChannels img)
                         format il_UNSIGNED_BYTE (castPtr p)
+            <* ilRegisterOriginC origin
         ) <?> FailedToDevil
 
 foreign import ccall unsafe "ilSaveImage" ilSaveImageC
