@@ -1,28 +1,32 @@
 {-# LANGUAGE BangPatterns, FlexibleContexts, FlexibleInstances
-           , ForeignFunctionInterface, MultiParamTypeClasses #-}
+           , ForeignFunctionInterface, LambdaCase, MultiParamTypeClasses #-}
 
 -- | Uses the DevIL C library to read and write images from and to files.
 --
 -- /Note:/ As the underlier DevIL library is *not* tread-safe, there is a global
 -- lock which will prevent two load/save calls to be performed at the same time.
 module Vision.Image.Storage.DevIL (
-      ImageType (..), StorageImage (..), StorageError (..), load, loadBS, save
+      ImageType (..), StorageImage (..), StorageError (..)
+    , load, loadBS, save, saveBS
     ) where
 
 import Control.Applicative ((<$>), (<*))
 import Control.Concurrent.MVar (MVar, newMVar, takeMVar, putMVar)
+import Control.DeepSeq (NFData (..), deepseq)
 import Control.Monad (when)
 import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.Error (Error (..), ErrorT, runErrorT, throwError)
+import Control.Monad.Trans.Error (
+      Error (..), ErrorT (..), runErrorT, throwError
+    )
 import Data.Convertible (Convertible (..), convert)
 import Data.Int
 import Data.Vector.Storable (unsafeFromForeignPtr0, unsafeWith)
 import Data.Word
 import Foreign.C.String (CString, withCString)
 import Foreign.Concurrent (newForeignPtr)
-import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Alloc (alloca, mallocBytes)
 import Foreign.Marshal.Utils (with)
-import Foreign.Ptr (Ptr, castPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek)
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -37,6 +41,12 @@ import Vision.Image.Type (Manifest (..), Delayed (..), delay)
 import Vision.Primitive (Z (..), (:.) (..), ix2)
 
 data StorageImage = GreyStorage Grey | RGBAStorage RGBA | RGBStorage RGB
+    deriving Show
+
+instance NFData StorageImage where
+    rnf !(GreyStorage img) = rnf img
+    rnf !(RGBAStorage img) = rnf img
+    rnf !(RGBStorage  img) = rnf img
 
 data ImageType = BMP | CUT
                | DDS         -- ^ DirectDraw Surface (.dds).
@@ -47,8 +57,11 @@ data ImageType = BMP | CUT
                | MNG | PCD | PCX | PIC | PNG
                | PNM         -- ^ Portable AnyMap (.pbm, .pgm or .ppm).
                | PSD | PSP | SGI | TGA | TIFF
-               | RAW         -- Raw data with a 13-byte header.
+               | RAW         -- ^ Raw data with a 13-byte header.
     deriving (Eq, Show)
+
+instance NFData ImageType where
+    rnf !_ = ()
 
 data StorageError = FailedToInit     -- ^ Failed to initialise the library.
                   | FailedToOpenFile -- ^ Failed to open the given file.
@@ -134,42 +147,57 @@ instance Show StorageError where
 -- If no image type is given, type will be determined automatically.
 load :: Maybe ImageType -> FilePath -> IO (Either StorageError StorageImage)
 load mType path =
-    lockDevil $
-        bindAndLoad $
-            withCString path $ \cPath ->
-                ilLoadC (toIlType mType) cPath
+    mType `deepseq` path `deepseq` (
+        lockAndBind $ \name -> do
+            ilLoad mType path
+            fromDevil name
+    )
 
 -- | Reads an image into a manifest vector from a strict 'ByteString'.
 --
 -- If no image type is given, type will be determined automatically.
 -- TIFF images are not supported.
 loadBS :: Maybe ImageType -> BS.ByteString
-       -> IO (Either StorageError StorageImage)
-loadBS (Just TIFF) _  = return $ Left FailedToLoad
+       -> Either StorageError StorageImage
+loadBS (Just TIFF) _  = Left FailedToLoad
 loadBS mType       bs =
-    lockDevil $
-        bindAndLoad $
-            BS.unsafeUseAsCStringLen bs $ \(ptr, len) ->
-                ilLoadLC (toIlType mType) ptr (fromIntegral len)
+    mType `deepseq` bs `deepseq` (
+        unsafePerformIO $
+            lockAndBind $ \name -> do
+                ilLoadL mType bs
+                fromDevil name
+    )
 
 -- | Saves the image to the given file.
 --
 -- /Note:/ The image type is determined by the filename extension.
 -- Will fail if the file already exists.
-save :: (Convertible i StorageImage) => FilePath -> i -> IO (Maybe StorageError)
-save path img = lockDevil $ do
-    res <- runErrorT $ do
-        ilInit
-        name <- ilGenImageName
-        ilBindImage name
+save :: (Convertible i StorageImage) => Maybe ImageType -> FilePath -> i
+     -> IO (Maybe StorageError)
+save mType path img =
+    mType `deepseq` path `deepseq` storImg `deepseq` (do
+        res <- lockAndBind $ \name -> do
+            toDevil storImg
+            ilSave mType path
+            ilDeleteImage name
 
-        toDevil $ convert img
-        ilSaveImage path
+        return $ case res of Right () -> Nothing
+                             Left err -> Just err
+    )
+  where
+    storImg = convert img
 
-        ilDeleteImage name
-
-    return $ case res of Right () -> Nothing
-                         Left err -> Just err
+saveBS :: (Convertible i StorageImage) => Maybe ImageType -> i
+       -> Either StorageError BS.ByteString
+saveBS mType img =
+    mType `deepseq` storImg `deepseq` (
+        unsafePerformIO $
+            lockAndBind $ \name -> do
+                toDevil storImg
+                ilSaveL mType <* ilDeleteImage name
+    )
+  where
+    storImg = convert img
 
 -- C wrappers and helpers ------------------------------------------------------
 
@@ -179,6 +207,8 @@ devilLock = unsafePerformIO $ newMVar ()
 
 -- | Uses a global lock ('devilLock') to prevent two threads to call the
 -- library at the same time.
+-- Make sure that action will not trigger another call to lockDevil due to lazy
+-- evaluation.
 lockDevil :: IO a -> IO a
 lockDevil action = do
     takeMVar devilLock
@@ -186,25 +216,17 @@ lockDevil action = do
     putMVar devilLock ()
     return ret
 
--- | Allocates a new image name, executes the given action to load the image
--- and then converts it into its Haskell representation.
-bindAndLoad :: IO ILboolean ->  IO (Either StorageError StorageImage)
-bindAndLoad action = runErrorT $ do
-    ilInit
-    name <- ilGenImageName
-    ilBindImage name
+-- | Locks the DevIL library, allocates a new image name and executes the given
+-- action.
+lockAndBind :: (ImageName -> StorageMonad a) -> IO (Either StorageError a)
+lockAndBind action =
+    lockDevil $
+        runErrorT $ do
+            ilInit
+            name <- ilGenImageName
+            ilBindImage name
 
-    res <- lift action
-    when (res == 0) $ do
-        err <- lift ilGetErrorC
-        throwError $ case err of
-            (#const IL_COULD_NOT_OPEN_FILE) -> FailedToOpenFile
-            (#const IL_INVALID_EXTENSION)   -> InvalidType
-            (#const IL_INVALID_FILE_HEADER) -> InvalidType
-            (#const IL_OUT_OF_MEMORY)       -> OutOfMemory
-            _                               -> FailedToLoad
-
-    fromDevil name
+            action name
 
 toIlType :: Maybe ImageType -> ILenum
 toIlType (Just BMP)      = (#const IL_BMP)
@@ -273,8 +295,9 @@ ilInit = do
     lift ilInitC
 
     -- By default, origin is undefined and depends on the image type
-    ilOriginFuncC origin <?> FailedToInit
-    ilEnableC (#const IL_ORIGIN_SET)            <?> FailedToInit
+    _ <- ilOriginFuncC origin             <?> FailedToInit
+    _ <- ilEnableC (#const IL_ORIGIN_SET) <?> FailedToInit
+    return ()
 
 foreign import ccall unsafe "ilGenImages" ilGenImagesC
   :: ILsizei -> Ptr ILuint -> IO ()
@@ -297,6 +320,27 @@ foreign import ccall unsafe "ilLoad" ilLoadC :: ILenum -> CString
                                              -> IO ILboolean
 foreign import ccall unsafe "ilLoadL" ilLoadLC :: ILenum -> CString -> ILuint
                                                -> IO ILboolean
+
+ilLoad :: Maybe ImageType -> FilePath -> StorageMonad ()
+ilLoad mType path = do
+    _ <- withCString path (ilLoadC (toIlType mType))
+        <??> (\case (#const IL_ILLEGAL_FILE_VALUE)  -> InvalidType
+                    (#const IL_INVALID_FILE_HEADER) -> InvalidType
+                    (#const IL_OUT_OF_MEMORY)       -> OutOfMemory
+                    _                               -> FailedToLoad)
+    return ()
+
+ilLoadL :: Maybe ImageType -> BS.ByteString -> StorageMonad ()
+ilLoadL mType bs = do
+    _ <- BS.unsafeUseAsCStringLen bs (\(ptr, len) ->
+                                    ilLoadLC (toIlType mType) ptr
+                                             (fromIntegral len))
+        <??> (\case (#const IL_COULD_NOT_OPEN_FILE) -> FailedToOpenFile
+                    (#const IL_ILLEGAL_FILE_VALUE)  -> InvalidType
+                    (#const IL_INVALID_FILE_HEADER) -> InvalidType
+                    (#const IL_OUT_OF_MEMORY)       -> OutOfMemory
+                    _                               -> FailedToLoad)
+    return ()
 
 foreign import ccall unsafe "ilGetInteger" ilGetIntegerC :: ILenum -> IO ILint
 foreign import ccall unsafe "ilConvertImage" ilConvertImageC
@@ -344,7 +388,8 @@ fromDevil (ImageName name) = do
     ilGetInteger mode = lift $ fromIntegral <$> ilGetIntegerC mode
 
     ilConvertImage format pixelType = do
-        ilConvertImageC format pixelType <?> FailedToHaskell
+        _ <- ilConvertImageC format pixelType <?> FailedToHaskell
+        return ()
 
 -- | Removes the image and any allocated memory.
 ilDeleteImage :: ImageName -> StorageMonad ()
@@ -367,26 +412,57 @@ toDevil storImg = do
                     RGBAStorage img -> writeManifest img il_RGBA
                     RGBStorage  img -> writeManifest img il_RGB
   where
-    writeManifest img@(Manifest (Z :. h :. w) vec) format =
-        (unsafeWith vec $ \p ->
-               ilTexImageC (fromIntegral w) (fromIntegral h) 1
+    writeManifest img@(Manifest (Z :. h :. w) vec) format = do
+        _ <- (unsafeWith vec $ \p ->
+                   ilTexImageC (fromIntegral w) (fromIntegral h) 1
                         (fromIntegral $ nChannels img)
-                        format il_UNSIGNED_BYTE (castPtr p)
-            <* ilRegisterOriginC origin
-        ) <?> FailedToDevil
+                        format il_UNSIGNED_BYTE (castPtr p))
+                <?> OutOfMemory
+        lift $ ilRegisterOriginC origin
 
-foreign import ccall unsafe "ilSaveImage" ilSaveImageC
-    :: CString -> IO ILboolean
+foreign import ccall unsafe "ilSave" ilSaveC
+    :: ILenum -> CString -> IO ILboolean
 
--- | Saves the current image.
-ilSaveImage :: FilePath -> StorageMonad ()
-ilSaveImage file = withCString file ilSaveImageC <?> FailedToSave
+-- | Saves the current image to a file.
+ilSave :: Maybe ImageType -> FilePath -> StorageMonad ()
+ilSave mType path = do
+    _ <- withCString path (ilSaveC (toIlType mType))
+            <??> (\case (#const IL_COULD_NOT_OPEN_FILE) -> FailedToOpenFile
+                        _                               -> FailedToSave)
+    return ()
+
+foreign import ccall unsafe "ilSaveL" ilSaveLC
+    :: ILenum -> Ptr () -> ILuint -> IO ILuint
+
+-- | Saves the current image to a memory area.
+ilSaveL :: Maybe ImageType -> StorageMonad BS.ByteString
+ilSaveL mType = do
+
+    -- ilSaveLC returns the number of bytes required to store the image when
+    -- called with a NULL pointer and a size of 0.
+    size <- ilSaveLC (toIlType mType) nullPtr 0 <?> FailedToSave
+    ptr  <- lift $ mallocBytes (fromIntegral size)
+
+    _ <- ilSaveLC (toIlType mType) ptr size
+            <??> (\case (#const IL_OUT_OF_MEMORY) -> OutOfMemory
+                        _                         -> FailedToSave)
+
+    lift $ BS.unsafePackMallocCStringLen (castPtr ptr, fromIntegral size)
 
 infix 0 <?>
 -- | Wraps a breakable DevIL action (which returns 0 on failure) in the
 -- 'StorageMonad'. Throws the given error in the monad if the action fails.
-(<?>) :: IO ILboolean -> StorageError -> StorageMonad ()
-action <?> err = do
+(<?>) :: Integral a => IO a -> StorageError -> StorageMonad a
+action <?> err = action <??> (const err)
+
+infix 0 <??>
+-- | Wraps a breakable DevIL action (which returns 0 on failure) in the
+-- 'StorageMonad'. On failure, throws the error given by the function when
+-- called with the 'ilGetErrorC' error code.
+(<??>) :: Integral a => IO a -> (ILenum -> StorageError) -> StorageMonad a
+action <??> f = do
     res <- lift action
-    when (res == 0) $
-        throwError err
+    when (res == 0) $ do
+        err <- lift ilGetErrorC
+        throwError (f err)
+    return res
