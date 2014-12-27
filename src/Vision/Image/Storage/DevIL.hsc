@@ -3,11 +3,28 @@
 
 -- | Uses the DevIL C library to read and write images from and to files.
 --
+-- Please read our
+-- <https://github.com/RaphaelJ/friday-devil/blob/master/README.md README> to
+-- to get a detailed usage and some examples.
+--
 -- /Note:/ As the underlier DevIL library is *not* tread-safe, there is a global
 -- lock which will prevent two load/save calls to be performed at the same time.
+-- The Haskell interface should be thread-safe but will not be able to benefit
+-- from multiple processing cores.
 module Vision.Image.Storage.DevIL (
-      ImageType (..), StorageImage (..), StorageError (..)
+    -- * Types & classes
+      StorageImage (..), StorageError (..)
+    , ImageType, LoadImageType, SaveImageType
+    -- * Functions
     , load, loadBS, save, saveBS
+    -- * Images types
+    , BLP (..), BMP (..), CUT (..), DCX (..), DDS (..), DICOM (..), Doom (..)
+    , DoomFlat (..), DPX (..), EXR (..), FITS (..), FTX (..), GIF (..)
+    , HDR (..), ICO (..), ICNS (..), IFF (..), IWI (..), JASCPAL (..), JP2 (..)
+    , JPG (..), LIF (..), MDL (..), MNG (..), MP3 (..), PCD (..), PCX (..)
+    , PIC (..), PIX (..), PNG (..), PNM (..), PSD (..), PSP (..), PXR (..)
+    , RAW (..), ROT (..), SGI (..), SUN (..), Texture (..), TGA (..), TIFF (..)
+    , TPL (..), UTX (..), VTF (..), WAL (..), WBMP (..), XPM (..)
     ) where
 
 import Control.Applicative ((<$>), (<*))
@@ -40,28 +57,12 @@ import Vision.Image.RGB (RGB, RGBPixel)
 import Vision.Image.Type (Manifest (..), Delayed (..), delay)
 import Vision.Primitive (Z (..), (:.) (..), ix2)
 
+import Vision.Image.Storage.DevIL.ImageType
+
+#include "IL/il.h"
+
 data StorageImage = GreyStorage Grey | RGBAStorage RGBA | RGBStorage RGB
     deriving Show
-
-instance NFData StorageImage where
-    rnf !(GreyStorage img) = rnf img
-    rnf !(RGBAStorage img) = rnf img
-    rnf !(RGBStorage  img) = rnf img
-
-data ImageType = BMP | CUT
-               | DDS         -- ^ DirectDraw Surface (.dds).
-               | Doom        -- ^ Doom texture.
-               | DoomFlat    -- ^ Doom flat texture (floor).
-               | GIF | ICO | JPG
-               | LIF         -- ^ Homeworld (.lif).
-               | MNG | PCD | PCX | PIC | PNG
-               | PNM         -- ^ Portable AnyMap (.pbm, .pgm or .ppm).
-               | PSD | PSP | SGI | TGA | TIFF
-               | RAW         -- ^ Raw data with a 13-byte header.
-    deriving (Eq, Show)
-
-instance NFData ImageType where
-    rnf !_ = ()
 
 data StorageError = FailedToInit     -- ^ Failed to initialise the library.
                   | FailedToOpenFile -- ^ Failed to open the given file.
@@ -79,7 +80,7 @@ data StorageError = FailedToInit     -- ^ Failed to initialise the library.
                   | UnknownError (Maybe String)
     deriving (Eq)
 
-type StorageMonad = ErrorT StorageError IO
+-- Instances -------------------------------------------------------------------
 
 instance Convertible StorageImage StorageImage where
     safeConvert = Right
@@ -123,6 +124,11 @@ instance Convertible StorageImage (Delayed RGBPixel) where
     safeConvert (RGBAStorage img) = Right $ convert img
     safeConvert (RGBStorage img)  = Right $ delay img
 
+instance NFData StorageImage where
+    rnf !(GreyStorage img) = rnf img
+    rnf !(RGBAStorage img) = rnf img
+    rnf !(RGBStorage  img) = rnf img
+
 instance Error StorageError where
     noMsg  = UnknownError Nothing
     strMsg = UnknownError . Just
@@ -142,40 +148,118 @@ instance Show StorageError where
     show (UnknownError (Just msg)) = msg
     show (UnknownError Nothing   ) = "Unknown error."
 
--- | Reads an image into a manifest vector from a file.
+-- Functions -------------------------------------------------------------------
+
+-- | Image types which can be loaded using 'load' and 'loadBS'.
+class ImageType t => LoadImageType t
+
+instance LoadImageType BLP
+instance LoadImageType BMP
+instance LoadImageType CUT
+instance LoadImageType DCX
+instance LoadImageType DDS
+instance LoadImageType DICOM
+instance LoadImageType Doom
+instance LoadImageType DoomFlat
+instance LoadImageType DPX
+instance LoadImageType EXR
+instance LoadImageType FITS
+instance LoadImageType FTX
+instance LoadImageType GIF
+instance LoadImageType HDR
+instance LoadImageType ICO
+instance LoadImageType ICNS
+instance LoadImageType IFF
+instance LoadImageType IWI
+instance LoadImageType JASCPAL
+instance LoadImageType JP2
+instance LoadImageType JPG
+instance LoadImageType LIF
+instance LoadImageType MDL
+instance LoadImageType MNG
+instance LoadImageType MP3
+instance LoadImageType PCD
+instance LoadImageType PCX
+instance LoadImageType PIC
+instance LoadImageType PIX
+instance LoadImageType PNG
+instance LoadImageType PNM
+instance LoadImageType PSD
+instance LoadImageType PSP
+instance LoadImageType PXR
+instance LoadImageType RAW
+instance LoadImageType ROT
+instance LoadImageType SGI
+instance LoadImageType SUN
+instance LoadImageType Texture
+instance LoadImageType TGA
+instance LoadImageType TIFF
+instance LoadImageType TPL
+instance LoadImageType UTX
+instance LoadImageType VTF
+instance LoadImageType WAL
+instance LoadImageType WBMP
+instance LoadImageType XPM
+
+-- | Reads an image from a file.
 --
--- If no image type is given, type will be determined automatically.
-load :: Maybe ImageType -> FilePath -> IO (Either StorageError StorageImage)
-load mType path =
-    mType `deepseq` path `deepseq` (
+-- If no image type is given, type will be determined automatically with the
+-- file extension and the file headers.
+load :: LoadImageType t => Maybe t -> FilePath
+     -> IO (Either StorageError StorageImage)
+load !mType path =
+    path `deepseq` (
         lockAndBind $ \name -> do
             ilLoad mType path
             fromDevil name
     )
 
--- | Reads an image into a manifest vector from a strict 'ByteString'.
+-- | Reads an image from a strict 'ByteString'.
 --
--- If no image type is given, type will be determined automatically.
--- TIFF images are not supported.
-loadBS :: Maybe ImageType -> BS.ByteString
+-- If no image type is given, type will be determined automatically with the
+-- file headers.
+loadBS :: LoadImageType t => Maybe t -> BS.ByteString
        -> Either StorageError StorageImage
-loadBS (Just TIFF) _  = Left FailedToLoad
-loadBS mType       bs =
-    mType `deepseq` bs `deepseq` (
+loadBS !mType       bs =
+    bs `deepseq` (
         unsafePerformIO $
             lockAndBind $ \name -> do
                 ilLoadL mType bs
                 fromDevil name
     )
 
+-- | Image types which can be loaded using 'save' and 'saveBS'.
+class ImageType t => SaveImageType t
+
+instance SaveImageType BMP
+instance SaveImageType CHEAD
+instance SaveImageType DDS
+instance SaveImageType EXR
+instance SaveImageType HDR
+instance SaveImageType JASCPAL
+instance SaveImageType JP2
+instance SaveImageType JPG
+instance SaveImageType PNG
+instance SaveImageType PNM
+instance SaveImageType PSD
+instance SaveImageType RAW
+instance SaveImageType SGI
+instance SaveImageType TGA
+instance SaveImageType TIFF
+instance SaveImageType VTF
+instance SaveImageType WBMP
+instance SaveImageType XPM
+
 -- | Saves the image to the given file.
 --
--- /Note:/ The image type is determined by the filename extension.
--- Will fail if the file already exists.
-save :: (Convertible i StorageImage) => Maybe ImageType -> FilePath -> i
-     -> IO (Maybe StorageError)
-save mType path img =
-    mType `deepseq` path `deepseq` storImg `deepseq` (do
+-- If no image type is given, the image type is determined by the filename
+-- extension.
+--
+-- /Note:/ will fail if the file already exists.
+save :: (SaveImageType t, Convertible i StorageImage)
+     => Maybe t -> FilePath -> i -> IO (Maybe StorageError)
+save !mType path img =
+    path `deepseq` storImg `deepseq` (do
         res <- lockAndBind $ \name -> do
             toDevil storImg
             ilSave mType path
@@ -187,10 +271,11 @@ save mType path img =
   where
     storImg = convert img
 
-saveBS :: (Convertible i StorageImage) => Maybe ImageType -> i
-       -> Either StorageError BS.ByteString
-saveBS mType img =
-    mType `deepseq` storImg `deepseq` (
+-- | Saves the image into a manifest vector from a strict 'ByteString'.
+saveBS :: (SaveImageType t, Convertible i StorageImage)
+       => t -> i -> Either StorageError BS.ByteString
+saveBS !mType img =
+    storImg `deepseq` (
         unsafePerformIO $
             lockAndBind $ \name -> do
                 toDevil storImg
@@ -200,6 +285,8 @@ saveBS mType img =
     storImg = convert img
 
 -- C wrappers and helpers ------------------------------------------------------
+
+type StorageMonad = ErrorT StorageError IO
 
 devilLock :: MVar ()
 devilLock = unsafePerformIO $ newMVar ()
@@ -227,32 +314,6 @@ lockAndBind action =
             ilBindImage name
 
             action name
-
-toIlType :: Maybe ImageType -> ILenum
-toIlType (Just BMP)      = (#const IL_BMP)
-toIlType (Just CUT)      = (#const IL_CUT)
-toIlType (Just DDS)      = (#const IL_DDS)
-toIlType (Just Doom)     = (#const IL_DOOM)
-toIlType (Just DoomFlat) = (#const IL_DOOM_FLAT)
-toIlType (Just GIF)      = (#const IL_GIF)
-toIlType (Just ICO)      = (#const IL_ICO)
-toIlType (Just JPG)      = (#const IL_JPG)
-toIlType (Just LIF)      = (#const IL_LIF)
-toIlType (Just MNG)      = (#const IL_MNG)
-toIlType (Just PCD)      = (#const IL_PCD)
-toIlType (Just PCX)      = (#const IL_PCX)
-toIlType (Just PIC)      = (#const IL_PIC)
-toIlType (Just PNG)      = (#const IL_PNG)
-toIlType (Just PNM)      = (#const IL_PNM)
-toIlType (Just PSD)      = (#const IL_PSD)
-toIlType (Just PSP)      = (#const IL_PSP)
-toIlType (Just SGI)      = (#const IL_SGI)
-toIlType (Just TGA)      = (#const IL_TGA)
-toIlType (Just TIFF)     = (#const IL_TIF)
-toIlType (Just RAW)      = (#const IL_RAW)
-toIlType Nothing         = (#const IL_TYPE_UNKNOWN)
-
-#include "IL/il.h"
 
 type ILuint    = #type ILuint
 type ILsizei   = #type ILsizei
@@ -321,19 +382,19 @@ foreign import ccall unsafe "ilLoad" ilLoadC :: ILenum -> CString
 foreign import ccall unsafe "ilLoadL" ilLoadLC :: ILenum -> CString -> ILuint
                                                -> IO ILboolean
 
-ilLoad :: Maybe ImageType -> FilePath -> StorageMonad ()
+ilLoad :: LoadImageType t => Maybe t -> FilePath -> StorageMonad ()
 ilLoad mType path = do
-    _ <- withCString path (ilLoadC (toIlType mType))
+    _ <- withCString path (ilLoadC (toIlType' mType))
         <??> (\case (#const IL_ILLEGAL_FILE_VALUE)  -> InvalidType
                     (#const IL_INVALID_FILE_HEADER) -> InvalidType
                     (#const IL_OUT_OF_MEMORY)       -> OutOfMemory
                     _                               -> FailedToLoad)
     return ()
 
-ilLoadL :: Maybe ImageType -> BS.ByteString -> StorageMonad ()
+ilLoadL :: LoadImageType t => Maybe t -> BS.ByteString -> StorageMonad ()
 ilLoadL mType bs = do
     _ <- BS.unsafeUseAsCStringLen bs (\(ptr, len) ->
-                                    ilLoadLC (toIlType mType) ptr
+                                    ilLoadLC (toIlType' mType) ptr
                                              (fromIntegral len))
         <??> (\case (#const IL_COULD_NOT_OPEN_FILE) -> FailedToOpenFile
                     (#const IL_ILLEGAL_FILE_VALUE)  -> InvalidType
@@ -424,9 +485,9 @@ foreign import ccall unsafe "ilSave" ilSaveC
     :: ILenum -> CString -> IO ILboolean
 
 -- | Saves the current image to a file.
-ilSave :: Maybe ImageType -> FilePath -> StorageMonad ()
+ilSave :: SaveImageType t => Maybe t -> FilePath -> StorageMonad ()
 ilSave mType path = do
-    _ <- withCString path (ilSaveC (toIlType mType))
+    _ <- withCString path (ilSaveC (toIlType' mType))
             <??> (\case (#const IL_COULD_NOT_OPEN_FILE) -> FailedToOpenFile
                         _                               -> FailedToSave)
     return ()
@@ -435,7 +496,7 @@ foreign import ccall unsafe "ilSaveL" ilSaveLC
     :: ILenum -> Ptr () -> ILuint -> IO ILuint
 
 -- | Saves the current image to a memory area.
-ilSaveL :: Maybe ImageType -> StorageMonad BS.ByteString
+ilSaveL :: SaveImageType t => t -> StorageMonad BS.ByteString
 ilSaveL mType = do
 
     -- ilSaveLC returns the number of bytes required to store the image when

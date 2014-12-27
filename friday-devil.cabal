@@ -23,6 +23,7 @@ cabal-version:          >= 1.10
 
 library
     exposed-modules:    Vision.Image.Storage.DevIL
+                        Vision.Image.Storage.DevIL.ImageType
 
     ghc-options:        -Wall -O2
     hs-source-dirs:     src/
