@@ -27,5 +27,16 @@ toRGB :: StorageImage -> RGB
 toRGB = convert
 ```
 
+The following example reads an image from a file, automatically determining
+the image format, and then writes it back into a `ByteString` as a greyscale
+*PNG* image.
+
+```haskell
+Right io <- load Autodetect "image.jpg"
+let grey = convert io :: Grey
+    bs   = saveBS PNG grey
+print bs
+```
+
 See the *[friday-examples](https://github.com/RaphaelJ/friday-examples)*
 package for a set of examples.
