@@ -11,20 +11,11 @@ PSD.
 
 ## Storage images
 
-When you use the `load` function to read an image from a file, the returned
-image is a `StorageImage`:
+Images returned from `load` or passed to `save` must be `Convertile` from and to
+`StorageImage`s. The `StorageImage` type is defined as:
 
 ```haskell
 data StorageImage = GreyStorage Grey | RGBAStorage RGBA | RGBStorage RGB
-```
-
-Before using an image loaded from a file, you need to convert it into an usable
-representation such as RGB. You can do this convertion with the `convert` method
-from the *convertible* package (re-exported by the *friday* package):
-
-```haskell
-toRGB :: StorageImage -> RGB
-toRGB = convert
 ```
 
 The following example reads an image from a file, automatically determining
@@ -32,10 +23,17 @@ the image format, and then writes it back into a `ByteString` as a greyscale
 *PNG* image.
 
 ```haskell
-Right io <- load Autodetect "image.jpg"
-let grey = convert io :: Grey
-    bs   = saveBS PNG grey
-print bs
+{-# LANGUAGE ScopedTypeVariables #-}
+main = do
+    io <- load Autodetect "image.jpg"
+    case io of
+        Right (rgb :: RGB) -> -- Forces the RGB colorspace for the loaded image.
+            let grey = convert rgb :: Grey
+                bs   = saveBS PNG grey
+            in print bs
+        Left err           -> do
+            putStrLn "Unable to load the image:"
+            print err
 ```
 
 See the *[friday-examples](https://github.com/RaphaelJ/friday-examples)*

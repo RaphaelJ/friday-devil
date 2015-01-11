@@ -1,18 +1,8 @@
 {-# LANGUAGE BangPatterns, FlexibleContexts, FlexibleInstances
            , ForeignFunctionInterface, LambdaCase, MultiParamTypeClasses #-}
 
--- | Uses the DevIL C library to read and write images from and to files.
---
--- The following example reads an image from a file, automatically determining
--- the image format, and then writes it back into a 'ByteString' as a greyscale
--- 'PNG' image.
---
--- @
--- Right io <- 'load' 'Autodetect' "image.jpg"
--- let grey = 'convert' io :: Grey
---     bs   = 'saveBS' 'PNG' grey
--- print bs
--- @
+-- | Uses the DevIL C library to read and write images from and to files and
+-- memory buffers.
 --
 -- Please read our
 -- <https://github.com/RaphaelJ/friday-devil/blob/master/README.md README> to
@@ -64,10 +54,10 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Unsafe as BS
 
 import Vision.Image.Class (nChannels)
-import Vision.Image.Grey (Grey, GreyPixel)
-import Vision.Image.RGBA (RGBA, RGBAPixel)
-import Vision.Image.RGB (RGB, RGBPixel)
-import Vision.Image.Type (Manifest (..), Delayed (..), delay)
+import Vision.Image.Grey (Grey, GreyDelayed)
+import Vision.Image.RGBA (RGBA, RGBADelayed)
+import Vision.Image.RGB (RGB, RGBDelayed)
+import Vision.Image.Type (Manifest (..), delay)
 import Vision.Primitive (Z (..), (:.) (..), ix2)
 
 import Vision.Image.Storage.DevIL.ImageType
@@ -101,41 +91,41 @@ data StorageError = FailedToInit      -- ^ Failed to initialise the library.
 instance Convertible StorageImage StorageImage where
     safeConvert = Right
 
-instance Convertible (Manifest GreyPixel) StorageImage where
+instance Convertible Grey StorageImage where
     safeConvert = Right . GreyStorage
 
-instance Convertible (Manifest RGBAPixel) StorageImage where
+instance Convertible RGBA StorageImage where
     safeConvert = Right . RGBAStorage
 
-instance Convertible (Manifest RGBPixel) StorageImage where
+instance Convertible RGB StorageImage where
     safeConvert = Right . RGBStorage
 
-instance Convertible StorageImage (Manifest GreyPixel) where
+instance Convertible StorageImage Grey where
     safeConvert (GreyStorage img) = Right img
     safeConvert (RGBAStorage img) = Right $ convert img
     safeConvert (RGBStorage img)  = Right $ convert img
 
-instance Convertible StorageImage (Manifest RGBAPixel) where
+instance Convertible StorageImage RGBA where
     safeConvert (GreyStorage img) = Right $ convert img
     safeConvert (RGBAStorage img) = Right img
     safeConvert (RGBStorage img)  = Right $ convert img
 
-instance Convertible StorageImage (Manifest RGBPixel) where
+instance Convertible StorageImage RGB where
     safeConvert (GreyStorage img) = Right $ convert img
     safeConvert (RGBAStorage img) = Right $ convert img
     safeConvert (RGBStorage img)  = Right img
 
-instance Convertible StorageImage (Delayed GreyPixel) where
+instance Convertible StorageImage GreyDelayed where
     safeConvert (GreyStorage img) = Right $ delay img
     safeConvert (RGBAStorage img) = Right $ convert img
     safeConvert (RGBStorage img)  = Right $ convert img
 
-instance Convertible StorageImage (Delayed RGBAPixel) where
+instance Convertible StorageImage RGBADelayed where
     safeConvert (GreyStorage img) = Right $ convert img
     safeConvert (RGBAStorage img) = Right $ delay img
     safeConvert (RGBStorage img)  = Right $ convert img
 
-instance Convertible StorageImage (Delayed RGBPixel) where
+instance Convertible StorageImage RGBDelayed where
     safeConvert (GreyStorage img) = Right $ convert img
     safeConvert (RGBAStorage img) = Right $ convert img
     safeConvert (RGBStorage img)  = Right $ delay img
@@ -223,29 +213,29 @@ instance LoadImageType XPM
 
 -- | Reads an image from a file.
 --
--- If no image type is given, type will be determined automatically with the
--- file extension and the file headers.
-load :: LoadImageType t => t -> FilePath
-     -> IO (Either StorageError StorageImage)
+-- If the 'Autodetect' image type is given, type will be determined
+-- automatically with the file extension and the file headers.
+load :: (LoadImageType t, Convertible StorageImage i)
+     => t -> FilePath -> IO (Either StorageError i)
 load !t path =
     path `deepseq` (
         lockAndBind $ \name -> do
             ilLoad t path
-            fromDevil name
+            convert <$> fromDevil name
     )
 
 -- | Reads an image from a strict 'ByteString'.
 --
--- If no image type is given, type will be determined automatically with the
--- file headers.
-loadBS :: LoadImageType t => t -> BS.ByteString
-       -> Either StorageError StorageImage
+-- If the 'Autodetect' image type is given, type will be determined
+-- automatically with the file headers.
+loadBS :: (LoadImageType t, Convertible StorageImage i)
+       => t -> BS.ByteString -> Either StorageError i
 loadBS !t bs =
     bs `deepseq` (
         unsafePerformIO $
             lockAndBind $ \name -> do
                 ilLoadL t bs
-                fromDevil name
+                convert <$> fromDevil name
     )
 
 -- | Image types which can be loaded using 'save'.
@@ -273,8 +263,8 @@ instance SaveImageType XPM
 
 -- | Saves the image to the given file.
 --
--- If no image type is given, the image type is determined by the filename
--- extension.
+-- If the 'Autodetect' image type is given, type will be determined
+-- automatically with the file extension.
 --
 -- /Note:/ will fail if the file already exists.
 save :: (SaveImageType t, Convertible i StorageImage)
