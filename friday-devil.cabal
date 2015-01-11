@@ -1,5 +1,8 @@
 name:                   friday-devil
-version:                0.1.0
+--                      +-+------- breaking API changes
+--                      | | +----- non-breaking API additions
+--                      | | | +--- code changes with no API change
+version:                0.1.0.1
 synopsis:               Uses the DevIL C library to read and write images from
                         and to files and memory buffers.
 homepage:               https://github.com/RaphaelJ/friday-devil
@@ -20,6 +23,10 @@ category:               Graphics
 stability:              Experimental
 build-type:             Simple
 cabal-version:          >= 1.10
+
+source-repository       head
+    type:               git
+    location:           https://github.com/RaphaelJ/friday-devil
 
 library
     exposed-modules:    Vision.Image.Storage.DevIL
