@@ -53,11 +53,7 @@ import System.IO.Unsafe (unsafePerformIO)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Unsafe as BS
 
-import Vision.Image.Class (nChannels)
-import Vision.Image.Grey (Grey, GreyDelayed)
-import Vision.Image.RGBA (RGBA, RGBADelayed)
-import Vision.Image.RGB (RGB, RGBDelayed)
-import Vision.Image.Type (Manifest (..), delay)
+import Vision.Image (Manifest (..), Grey, RGB, RGBA, nChannels)
 import Vision.Primitive (Z (..), (:.) (..), ix2)
 
 import Vision.Image.Storage.DevIL.ImageType
@@ -90,45 +86,26 @@ data StorageError = FailedToInit      -- ^ Failed to initialise the library.
 
 instance Convertible StorageImage StorageImage where
     safeConvert = Right
+    {-# INLINE safeConvert #-}
 
 instance Convertible Grey StorageImage where
     safeConvert = Right . GreyStorage
+    {-# INLINE safeConvert #-}
 
 instance Convertible RGBA StorageImage where
     safeConvert = Right . RGBAStorage
+    {-# INLINE safeConvert #-}
 
 instance Convertible RGB StorageImage where
     safeConvert = Right . RGBStorage
+    {-# INLINE safeConvert #-}
 
-instance Convertible StorageImage Grey where
-    safeConvert (GreyStorage img) = Right img
-    safeConvert (RGBAStorage img) = Right $ convert img
-    safeConvert (RGBStorage img)  = Right $ convert img
-
-instance Convertible StorageImage RGBA where
-    safeConvert (GreyStorage img) = Right $ convert img
-    safeConvert (RGBAStorage img) = Right img
-    safeConvert (RGBStorage img)  = Right $ convert img
-
-instance Convertible StorageImage RGB where
+instance (Convertible Grey i, Convertible RGB i, Convertible RGBA i)
+    => Convertible StorageImage i where
     safeConvert (GreyStorage img) = Right $ convert img
     safeConvert (RGBAStorage img) = Right $ convert img
-    safeConvert (RGBStorage img)  = Right img
-
-instance Convertible StorageImage GreyDelayed where
-    safeConvert (GreyStorage img) = Right $ delay img
-    safeConvert (RGBAStorage img) = Right $ convert img
     safeConvert (RGBStorage img)  = Right $ convert img
-
-instance Convertible StorageImage RGBADelayed where
-    safeConvert (GreyStorage img) = Right $ convert img
-    safeConvert (RGBAStorage img) = Right $ delay img
-    safeConvert (RGBStorage img)  = Right $ convert img
-
-instance Convertible StorageImage RGBDelayed where
-    safeConvert (GreyStorage img) = Right $ convert img
-    safeConvert (RGBAStorage img) = Right $ convert img
-    safeConvert (RGBStorage img)  = Right $ delay img
+    {-# INLINE safeConvert #-}
 
 instance NFData StorageImage where
     rnf !(GreyStorage img) = rnf img
