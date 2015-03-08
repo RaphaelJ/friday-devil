@@ -84,10 +84,6 @@ data StorageError = FailedToInit      -- ^ Failed to initialise the library.
 
 -- Instances -------------------------------------------------------------------
 
-instance Convertible StorageImage StorageImage where
-    safeConvert = Right
-    {-# INLINE safeConvert #-}
-
 instance Convertible Grey StorageImage where
     safeConvert = Right . GreyStorage
     {-# INLINE safeConvert #-}
@@ -100,6 +96,7 @@ instance Convertible RGB StorageImage where
     safeConvert = Right . RGBStorage
     {-# INLINE safeConvert #-}
 
+-- | Note: Convertible StorageImage StorageImage is provided by this instance.
 instance (Convertible Grey i, Convertible RGB i, Convertible RGBA i)
     => Convertible StorageImage i where
     safeConvert (GreyStorage img) = Right $ convert img
