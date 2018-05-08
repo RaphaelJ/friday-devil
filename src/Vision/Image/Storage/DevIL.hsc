@@ -8,7 +8,7 @@
 -- <https://github.com/RaphaelJ/friday-devil/blob/master/README.md README> to
 -- to get a detailed usage and some examples.
 --
--- /Note:/ As the underlying DevIL library is *not* tread-safe, there is a
+-- /Note:/ As the underlying DevIL library is *not* thread-safe, there is a
 -- global lock which will prevent two load/save calls to be performed at the
 -- same time.
 -- The Haskell interface should be thread-safe but will not be able to benefit
