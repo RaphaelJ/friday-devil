@@ -45,6 +45,4 @@ library
                       , transformers            >= 0.3          && < 0.6
                       , vector                  >= 0.10.0.1     && < 1
 
-    Build-tools:        hsc2hs
-
-    Extra-Libraries:    IL
+    pkgconfig-depends:  IL
